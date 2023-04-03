@@ -1,19 +1,41 @@
-// TODO: make sure it's EIP compliant (e.g. events)
-//       proper safe_transfer_from
-//       more asserts
+// TODO: proper safe_transfer_from
 //       mint w/ Herodotus
 //       token URI - wat do?
+
+// EIP checklist:
+//   done:
+//     * name
+//     * symbol
+//     * token_uri
+//     * balance_of
+//     * owner_of
+//     * get_approved
+//     * is_approved_for_all
+//     * transfer_from
+//     * approve
+//     * set_approval_for_all
+//   pending:
+//     * safe_transfer_from
 
 #[contract]
 mod NFT {
     use array::ArrayTrait;
+    use traits::Into;
     use starknet::contract_address;
     use starknet::ContractAddress;
     use starknet::get_caller_address;
     use zeroable::Zeroable;
-    use traits::Into;
 
     type addr = ContractAddress;
+
+    #[event]
+    fn Transfer(from: addr, to: addr, token_id: u256) {}
+
+    #[event]
+    fn Approval(owner: addr, approved: addr, token_id: u256) {}
+
+    #[event]
+    fn ApprovalForAll(owner: addr, operator: addr, approved: bool) {}
 
     struct Storage {
         token_uris: LegacyMap<u256, felt252>,
@@ -57,6 +79,8 @@ mod NFT {
 
     #[view]
     fn token_uri(token_id: u256) -> felt252 {
+        assert_valid_token(token_id);
+        // TODO: decide on and serve a proper URI
         token_uris::read(token_id)
     }   
 
@@ -66,16 +90,20 @@ mod NFT {
 
     #[view]
     fn balance_of(owner: addr) -> u256 {
+        assert_valid_address(owner);
         balances::read(owner)
     }
 
     #[view]
     fn owner_of(token_id: u256) -> addr {
-        owners::read(token_id)
+        let owner = owners::read(token_id);
+        assert_valid_address(owner);
+        owner
     }
 
     #[view]
     fn get_approved(token_id: u256) -> addr {
+        assert_valid_token(token_id);
         token_approvals::read(token_id)
     }
 
@@ -84,16 +112,14 @@ mod NFT {
         operator_approvals::read((owner, operator))
     }
 
-    // TODO: on_erc721_received?
     #[external]
     fn safe_transfer_from(from: addr, to: addr, token_id: u256, data: Array<felt252>) {
-        assert_approved_or_owner(get_caller_address(), token_id);
         transfer(from, to, token_id);
+        // TODO: on_erc721_received?
     }
 
     #[external]
     fn transfer_from(from: addr, to: addr, token_id: u256) {
-        assert_approved_or_owner(get_caller_address(), token_id);
         transfer(from, to, token_id);
     }
 
@@ -109,13 +135,15 @@ mod NFT {
         );
 
         token_approvals::write(token_id, approved);
+        Approval(owner, approved, token_id);
     }
 
     #[external]
     fn set_approval_for_all(operator: addr, approval: bool) {
-        let caller = get_caller_address();
-        assert(caller != operator, 'approval to self');
-        operator_approvals::write((caller, operator), approval)
+        let owner = get_caller_address();
+        assert(owner != operator, 'approval to self');
+        operator_approvals::write((owner, operator), approval);
+        ApprovalForAll(owner, operator, approval);
     }
 
     //
@@ -140,27 +168,38 @@ mod NFT {
         let owner = owners::read(token_id);
         let approved = get_approved(token_id);
         assert(
-            owner == operator | operator == approved | is_approved_for_all(owner, operator),
+            operator == owner | operator == approved | is_approved_for_all(owner, operator),
             'operation not allowed'
         );
     }
 
-    fn assert_valid(token_id: u256) {
+    fn assert_valid_address(address: addr) {
+        assert(address.is_non_zero(), 'invalid address');
+    }
+
+    fn assert_valid_token(token_id: u256) {
         assert(owners::read(token_id).is_non_zero(), 'invalid token ID')
     }
 
     fn transfer(from: addr, to: addr, token_id: u256) {
+        assert_approved_or_owner(get_caller_address(), token_id);
+        assert(owners::read(token_id) == from, 'source not owner');
         assert(to.is_non_zero(), 'transferring to zero');
+        assert_valid_token(token_id);
 
-        token_approvals::write(token_id, Zeroable::zero()); // TODO: should emit Approval
+        // reset approvals
+        let zero: addr = Zeroable::zero();
+        token_approvals::write(token_id, zero);
+        Approval(from, zero, token_id);
 
+        // update balances
         let owner_balance = balances::read(from);
         balances::write(from, owner_balance - 1.into());
-
         let receiver_balance = balances::read(to);
         balances::write(to, receiver_balance + 1.into());
 
+        // update ownership
         owners::write(token_id, to);
-        // TODO: emit Transfer
+        Transfer(from, to, token_id);
     }
 }
