@@ -188,9 +188,7 @@ mod NFT {
         assert_valid_token(token_id);
 
         // reset approvals
-        let zero: addr = Zeroable::zero();
-        token_approvals::write(token_id, zero);
-        Approval(from, zero, token_id);
+        token_approvals::write(token_id, Zeroable::zero());
 
         // update balances
         let owner_balance = balances::read(from);
